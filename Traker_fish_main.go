@@ -85,6 +85,7 @@ func obtenerVariantesOficiales(pezBase string) []string {
 
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
+		log.Printf("⚠️ No se pudo cargar la lista principal para buscar el enlace de %s", pezBase)
 		return nil
 	}
 	defer resp.Body.Close()
@@ -100,24 +101,33 @@ func obtenerVariantesOficiales(pezBase string) []string {
 	})
 
 	if linkDetalle == "" {
+		log.Printf("⚠️ No se encontró enlace de detalle para el pez: %s", pezBase)
 		return nil
 	}
 
+	// Corrección limpia de URL para evitar errores de ruta
 	if !strings.HasPrefix(linkDetalle, "http") {
-		linkDetalle = "https://reef.xs-pets.com/" + strings.TrimPrefix(linkDetalle, "/")
+		linkDetalle = "https://reef.xs-pets.com" + "/" + strings.TrimPrefix(linkDetalle, "/")
 	}
+
+	log.Printf("🌐 Consultando detalle para %s en URL: %s", pezBase, linkDetalle)
 
 	reqDetalle, _ := http.NewRequest("GET", linkDetalle, nil)
 	reqDetalle.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 	respDetalle, err := client.Do(reqDetalle)
 	if err != nil {
+		log.Printf("⚠️ Error HTTP al entrar al detalle de %s: %v", pezBase, err)
 		return nil
 	}
 	defer respDetalle.Body.Close()
 
-	docDetalle, _ := goquery.NewDocumentFromReader(respDetalle.Body)
-	var variantes []string
+	docDetalle, err := goquery.NewDocumentFromReader(respDetalle.Body)
+	if err != nil {
+		log.Printf("⚠️ Error leyendo HTML de detalle para %s", pezBase)
+		return nil
+	}
 
+	var variantes []string
 	docDetalle.Find("tr").Each(func(j int, fila *goquery.Selection) {
 		var celdas []string
 		fila.Find("td").Each(func(k int, cell *goquery.Selection) {
@@ -127,19 +137,12 @@ func obtenerVariantesOficiales(pezBase string) []string {
 		if len(celdas) >= 3 {
 			nombreVariante := celdas[0]
 			if nombreVariante != "" {
-				encontrada := false
-				for _, v := range variantes {
-					if strings.EqualFold(v, nombreVariante) {
-						encontrada = true
-						break
-					}
-				}
-				if !encontrada {
-					variantes = append(variantes, nombreVariante)
-				}
+				variantes = append(variantes, nombreVariante)
 			}
 		}
 	})
+
+	log.Printf("📦 Variantes oficiales encontradas para [%s]: %v", pezBase, variantes)
 
 	mutex.Lock()
 	variantesCache[pezBase] = variantes
@@ -160,10 +163,6 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 	mutex.RLock()
 	catalogoLocal := catalogoPeces
 	mutex.RUnlock()
-
-	// LOGS DE DEPURACIÓN EN RENDER
-	log.Printf("📥 Recibido del HUD: [%s]", nombresRecibidos)
-	log.Printf("📦 Peces base en memoria: %d", len(catalogoLocal))
 
 	if nombresRecibidos == "" || len(catalogoLocal) == 0 {
 		w.Write([]byte("VACIO"))
@@ -192,10 +191,11 @@ OUTER:
 		}
 
 		if !pezBaseValido {
-			log.Printf("❌ Descartado (Pez base no existe en catálogo): %s", pezBase)
+			log.Printf("❌ Descartado (Pez base no existe): %s", pezBase)
 			continue
 		}
 
+		// Si tiene variante (ej: "Crayfish: Red Crayfish")
 		if len(partesObj) > 1 {
 			varianteBuscada := strings.TrimSpace(partesObj[1])
 			variantesOficiales := obtenerVariantesOficiales(pezBase)
@@ -209,7 +209,7 @@ OUTER:
 			}
 
 			if !varianteReal {
-				log.Printf("❌ Descartado (Variante falsa/inventada): %s", obj)
+				log.Printf("❌ Descartado (Variante no oficial): [%s]", obj)
 				continue
 			}
 		}
@@ -284,7 +284,7 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !strings.HasPrefix(linkDetalle, "http") {
-		linkDetalle = "https://reef.xs-pets.com/" + strings.TrimPrefix(linkDetalle, "/")
+		linkDetalle = "https://reef.xs-pets.com" + "/" + strings.TrimPrefix(linkDetalle, "/")
 	}
 
 	reqDetalle, _ := http.NewRequest("GET", linkDetalle, nil)
