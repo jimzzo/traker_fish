@@ -21,13 +21,12 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entradaUsuario := r.FormValue("pez") // Ej: "Axolotl" o "Axolotl: Agate Gemstone"
+	entradaUsuario := r.FormValue("pez")
 	if entradaUsuario == "" {
 		http.Error(w, "Falta el nombre del pez", http.StatusBadRequest)
 		return
 	}
 
-	// Separamos el pez base de su variante si usa ":"
 	partes := strings.Split(entradaUsuario, ":")
 	pezBase := strings.TrimSpace(partes[0])
 	var varianteBuscada string
@@ -35,38 +34,35 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 		varianteBuscada = strings.TrimSpace(partes[1])
 	}
 
-	// 1. Entramos a la lista principal para buscar el enlace del pez base
 	urlBase := "https://reef.xs-pets.com/fish"
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", urlBase, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
 
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
-		http.Error(w, "Error al conectar con la web de Xundra", http.StatusInternalServerError)
+		http.Error(w, "Error al conectar con Xundra", http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		http.Error(w, "Error leyendo el HTML", http.StatusInternalServerError)
+		http.Error(w, "Error leyendo HTML", http.StatusInternalServerError)
 		return
 	}
 
 	var linkDetalle string
 	doc.Find("a").Each(func(i int, s *goquery.Selection) {
-		textoEnlace := strings.TrimSpace(s.Text())
-		if strings.EqualFold(textoEnlace, pezBase) {
-			href, existe := s.Attr("href")
-			if existe {
+		if strings.EqualFold(strings.TrimSpace(s.Text()), pezBase) {
+			if href, existe := s.Attr("href"); existe {
 				linkDetalle = href
 			}
 		}
 	})
 
 	if linkDetalle == "" {
-		w.Write([]byte("Pez base no encontrado en el índice oficial (#FF4500)"))
+		w.Write([]byte(fmt.Sprintf("Pez [%s] no encontrado.", pezBase)))
 		return
 	}
 
@@ -74,40 +70,39 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 		linkDetalle = "https://reef.xs-pets.com/" + strings.TrimPrefix(linkDetalle, "/")
 	}
 
-	// 2. Entramos a la página de detalles específica de ese pez
 	reqDetalle, _ := http.NewRequest("GET", linkDetalle, nil)
 	reqDetalle.Header.Set("User-Agent", "Mozilla/5.0")
 	respDetalle, err := client.Do(reqDetalle)
 	if err != nil {
-		http.Error(w, "Error al entrar al detalle del pez", http.StatusInternalServerError)
+		http.Error(w, "Error al entrar al detalle", http.StatusInternalServerError)
 		return
 	}
 	defer respDetalle.Body.Close()
 
 	docDetalle, err := goquery.NewDocumentFromReader(respDetalle.Body)
 	if err != nil {
-		http.Error(w, "Error leyendo el detalle", http.StatusInternalServerError)
+		http.Error(w, "Error leyendo detalle", http.StatusInternalServerError)
 		return
 	}
 
 	var resultadoBuilder strings.Builder
 	encontrado := false
 
-	// 3. Buscamos las filas o elementos dentro de la página de detalles
-	// Dependiendo de cómo esté estructurada la tabla de variantes en su web:
-	docDetalle.Find("tr, li, .variant-class").Each(func(i int, s *goquery.Selection) {
-		textoFila := strings.TrimSpace(s.Text())
-		
-		if varianteBuscada != "" {
-			// Si el usuario buscó una variante específica (ej: Agate Gemstone)
-			if strings.Contains(strings.ToLower(textoFila), strings.ToLower(varianteBuscada)) {
-				resultadoBuilder.WriteString(textoFila + " ")
-				encontrado = true
-			}
-		} else {
-			// Si solo puso el pez base, recopilamos las variantes/cantidades principales
-			if textoFila != "" {
-				resultadoBuilder.WriteString(textoFila + " | ")
+	// Buscamos en las filas de las tablas del detalle extrayendo las celdas individualmente
+	docDetalle.Find("tr").Each(func(i int, s *goquery.Selection) {
+		var celdas []string
+		s.Find("td").Each(func(j int, cell *goquery.Selection) {
+			celdas = append(celdas, strings.TrimSpace(cell.Text()))
+		})
+
+		if len(celdas) >= 3 {
+			nombreFila := celdas[0]
+			eggs := celdas[1]
+			fish := celdas[2]
+
+			// Si coincide con la variante específica o si queremos mostrar todas las variantes del pez
+			if varianteBuscada == "" || strings.Contains(strings.ToLower(nombreFila), strings.ToLower(varianteBuscada)) {
+				resultadoBuilder.WriteString(fmt.Sprintf("• %s EGGS: %s | FISH: %s \n", nombreFila, eggs, fish))
 				encontrado = true
 			}
 		}
@@ -115,12 +110,7 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 
 	mensajeFinal := resultadoBuilder.String()
 	if !encontrado {
-		mensajeFinal = "Variante no encontrada en este pez."
-	}
-
-	// Limitamos la longitud por si el texto es muy largo para el chat de SL
-	if len(mensajeFinal) > 250 {
-		mensajeFinal = mensajeFinal[:247] + "..."
+		mensajeFinal = fmt.Sprintf("Sin stock o datos para: %s", entradaUsuario)
 	}
 
 	w.Write([]byte(mensajeFinal))
@@ -128,6 +118,6 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	http.HandleFunc("/api/pez", consultarExistenciasHandler)
-	fmt.Println("Servidor Go optimizado activo en puerto 8080...")
+	fmt.Println("Servidor Go activo en puerto 8080...")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
