@@ -68,7 +68,7 @@ func iniciarActualizadorAutomatico() {
 	}()
 }
 
-// Endpoint 1: Recibe los objetos detectados por LSL, los filtra con la caché y devuelve solo los peces válidos
+// Endpoint 1: Filtro estricto basado en coincidencia exacta del nombre base
 func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
@@ -95,19 +95,31 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Extraemos estrictamente la parte base del nombre (antes de los dos puntos si los tiene)
+		// Ej: "Crayfish: Blue Spotted" -> "Crayfish"
+		partesObj := strings.Split(obj, ":")
+		baseObj := strings.TrimSpace(partesObj[0])
+
+		// Comprobamos si el nombre base coincide exactamente con algún pez oficial del catálogo
+		esValido := false
 		for _, cat := range catalogoLocal {
-			if strings.Contains(strings.ToLower(obj), strings.ToLower(cat)) {
-				duplicado := false
-				for _, v := range validos {
-					if strings.EqualFold(v, obj) {
-						duplicado = true
-						break
-					}
-				}
-				if !duplicado {
-					validos = append(validos, obj)
-				}
+			if strings.EqualFold(baseObj, cat) {
+				esValido = true
 				break
+			}
+		}
+
+		if esValido {
+			// Evitamos duplicados en la lista de menú
+			duplicado := false
+			for _, v := range validos {
+				if strings.EqualFold(v, obj) {
+					duplicado = true
+					break
+				}
+			}
+			if !duplicado {
+				validos = append(validos, obj)
 			}
 		}
 	}
@@ -228,5 +240,5 @@ func main() {
 	http.HandleFunc("/api/pez", consultarExistenciasHandler)
 
 	fmt.Println("Servidor Go optimizado activo en puerto 8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+    log.Fatal(http.ListenAndServe(":8080", nil))
 }
