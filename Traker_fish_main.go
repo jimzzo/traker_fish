@@ -221,7 +221,7 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(mensajeFinal))
 }
 
-fn main() {
+func main() {
 	go iniciarActualizadorAutomatico()
 
 	http.HandleFunc("/api/filtrar_menu", filtrarMenuHandler)
