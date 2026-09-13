@@ -68,7 +68,61 @@ func iniciarActualizadorAutomatico() {
 	}()
 }
 
-// Endpoint 1: Filtro estricto basado en coincidencia exacta del nombre base
+// Función auxiliar para comprobar si una variante existe realmente en la página de detalle del pez
+func validarVarianteEnWeb(pezBase, varianteBuscada string) bool {
+	urlBase := "https://reef.xs-pets.com/fish"
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, _ := http.NewRequest("GET", urlBase, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return false
+	}
+	defer resp.Body.Close()
+
+	doc, _ := goquery.NewDocumentFromReader(resp.Body)
+	var linkDetalle string
+	doc.Find("a").Each(func(i int, s *goquery.Selection) {
+		if strings.EqualFold(strings.TrimSpace(s.Text()), pezBase) {
+			if href, existe := s.Attr("href"); existe {
+				linkDetalle = href
+			}
+		}
+	})
+
+	if linkDetalle == "" {
+		return false
+	}
+
+	if !strings.HasPrefix(linkDetalle, "http") {
+		linkDetalle = "https://reef.xs-pets.com/" + strings.TrimPrefix(linkDetalle, "/")
+	}
+
+	reqDetalle, _ := http.NewRequest("GET", linkDetalle, nil)
+	reqDetalle.Header.Set("User-Agent", "Mozilla/5.0")
+	respDetalle, err := client.Do(reqDetalle)
+	if err != nil {
+		return false
+	}
+	defer respDetalle.Body.Close()
+
+	docDetalle, _ := goquery.NewDocumentFromReader(respDetalle.Body)
+	encontrada := false
+
+	docDetalle.Find("tr").Each(func(i int, s *goquery.Selection) {
+		s.Find("td").Each(func(j int, cell *goquery.Selection) {
+			textoCelda := strings.TrimSpace(cell.Text())
+			if strings.EqualFold(textoCelda, varianteBuscada) {
+				encontrada = true
+			}
+		})
+	})
+
+	return encontrada
+}
+
+// Endpoint 1: Filtro estricto que valida tanto el pez base como la variante exacta en la web
 func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
@@ -95,32 +149,43 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Extraemos estrictamente la parte base del nombre (antes de los dos puntos si los tiene)
-		// Ej: "Crayfish: Blue Spotted" -> "Crayfish"
+		// Separamos nombre base y variante (si tiene dos puntos)
 		partesObj := strings.Split(obj, ":")
-		baseObj := strings.TrimSpace(partesObj[0])
+		pezBase := strings.TrimSpace(partesObj[0])
 
-		// Comprobamos si el nombre base coincide exactamente con algún pez oficial del catálogo
-		esValido := false
+		// 1. Validar que el pez base exista en el catálogo general
+		pezBaseValido := false
 		for _, cat := range catalogoLocal {
-			if strings.EqualFold(baseObj, cat) {
-				esValido = true
+			if strings.EqualFold(pezBase, cat) {
+				pezBaseValido = true
 				break
 			}
 		}
 
-		if esValido {
-			// Evitamos duplicados en la lista de menú
-			duplicado := false
-			for _, v := range validos {
-				if strings.EqualFold(v, obj) {
-					duplicado = true
-					break
-				}
+		if !pezBaseValido {
+			continue // Si el pez base no existe, descartado
+		}
+
+		// 2. Si el usuario especificó una variante (ej: "Crayfish: Blue Spotted"), 
+		// debemos comprobar que esa variante exista realmente en la web de Xundra.
+		if len(partesObj) > 1 {
+			varianteBuscada := strings.TrimSpace(partesObj[1])
+			// Validamos contra la web si la variante es real (ej: rechaza "Prueba Hembra")
+			if !validarVarianteEnWeb(pezBase, varianteBuscada) {
+				continue // Variante falsa o inventada por usuario, descartada
 			}
-			if !duplicado {
-				validos = append(validos, obj)
+		}
+
+		// Si pasa los filtros, lo añadimos sin duplicados
+		duplicado := false
+		for _, v := range validos {
+			if strings.EqualFold(v, obj) {
+				duplicado = true
+				break
 			}
+		}
+		if !duplicado {
+			validos = append(validos, obj)
 		}
 	}
 
@@ -240,5 +305,5 @@ func main() {
 	http.HandleFunc("/api/pez", consultarExistenciasHandler)
 
 	fmt.Println("Servidor Go optimizado activo en puerto 8080...")
-    log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
