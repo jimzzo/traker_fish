@@ -85,7 +85,6 @@ func obtenerVariantesOficiales(pezBase string) []string {
 
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
-		log.Printf("⚠️ No se pudo cargar la lista principal para buscar el enlace de %s", pezBase)
 		return nil
 	}
 	defer resp.Body.Close()
@@ -101,29 +100,23 @@ func obtenerVariantesOficiales(pezBase string) []string {
 	})
 
 	if linkDetalle == "" {
-		log.Printf("⚠️ No se encontró enlace de detalle para el pez: %s", pezBase)
 		return nil
 	}
 
-	// Corrección limpia de URL para evitar errores de ruta
 	if !strings.HasPrefix(linkDetalle, "http") {
 		linkDetalle = "https://reef.xs-pets.com" + "/" + strings.TrimPrefix(linkDetalle, "/")
 	}
-
-	log.Printf("🌐 Consultando detalle para %s en URL: %s", pezBase, linkDetalle)
 
 	reqDetalle, _ := http.NewRequest("GET", linkDetalle, nil)
 	reqDetalle.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 	respDetalle, err := client.Do(reqDetalle)
 	if err != nil {
-		log.Printf("⚠️ Error HTTP al entrar al detalle de %s: %v", pezBase, err)
 		return nil
 	}
 	defer respDetalle.Body.Close()
 
 	docDetalle, err := goquery.NewDocumentFromReader(respDetalle.Body)
 	if err != nil {
-		log.Printf("⚠️ Error leyendo HTML de detalle para %s", pezBase)
 		return nil
 	}
 
@@ -135,14 +128,12 @@ func obtenerVariantesOficiales(pezBase string) []string {
 		})
 
 		if len(celdas) >= 3 {
-			nombreVariante := celdas[0]
+			nombreVariante := celdas[0] // Ej: "Crayfish: Red Crayfish"
 			if nombreVariante != "" {
 				variantes = append(variantes, nombreVariante)
 			}
 		}
 	})
-
-	log.Printf("📦 Variantes oficiales encontradas para [%s]: %v", pezBase, variantes)
 
 	mutex.Lock()
 	variantesCache[pezBase] = variantes
@@ -179,9 +170,10 @@ OUTER:
 			continue
 		}
 
-		partesObj := strings.Split(obj, ":")
+		partesObj := strings.SplitN(obj, ":", 2)
 		pezBase := strings.TrimSpace(partesObj[0])
 
+		// 1. Validar pez base
 		pezBaseValido := false
 		for _, cat := range catalogoLocal {
 			if strings.EqualFold(pezBase, cat) {
@@ -195,14 +187,13 @@ OUTER:
 			continue
 		}
 
-		// Si tiene variante (ej: "Crayfish: Red Crayfish")
+		// 2. Si tiene variante, comprobamos si el nombre completo coincide exactamente con la lista oficial
 		if len(partesObj) > 1 {
-			varianteBuscada := strings.TrimSpace(partesObj[1])
 			variantesOficiales := obtenerVariantesOficiales(pezBase)
 
 			varianteReal := false
 			for _, vOficial := range variantesOficiales {
-				if strings.EqualFold(vOficial, varianteBuscada) {
+				if strings.EqualFold(vOficial, obj) { // Compara directamente "Crayfish: Red Crayfish"
 					varianteReal = true
 					break
 				}
@@ -214,6 +205,7 @@ OUTER:
 			}
 		}
 
+		// Evitar duplicados
 		for _, v := range validos {
 			if strings.EqualFold(v, obj) {
 				continue OUTER
@@ -244,7 +236,7 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	partes := strings.Split(entradaUsuario, ":")
+	partes := strings.SplitN(entradaUsuario, ":", 2)
 	pezBase := strings.TrimSpace(partes[0])
 	var varianteBuscada string
 	if len(partes) > 1 {
@@ -312,12 +304,13 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 		})
 
 		if len(celdas) >= 3 {
-			nombreFila := celdas[0]
+			nombreFila := celdas[0] // Ej: "Crayfish: Red Crayfish"
 			eggs := celdas[1]
 			fish := celdas[2]
 
-			if varianteBuscada == "" || strings.EqualFold(nombreFila, varianteBuscada) {
-				resultadoBuilder.WriteString(fmt.Sprintf("• %s EGGS: %s | FISH: %s \n", nombreFila, eggs, fish))
+			// Comparamos si coincide el nombre completo o la variante sola
+			if varianteBuscada == "" || strings.EqualFold(nombreFila, entradaUsuario) || strings.EqualFold(nombreFila, varianteBuscada) {
+				resultadoBuilder.WriteString(fmt.Sprintf("• %s | EGGS: %s | FISH: %s \n", nombreFila, eggs, fish))
 				encontradoVariante = true
 			}
 		}
@@ -325,7 +318,7 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 
 	mensajeFinal := resultadoBuilder.String()
 	if !encontradoVariante {
-		mensajeFinal = fmt.Sprintf("Sin stock para: %s", entradaUsuario)
+		mensajeFinal = fmt.Sprintf("Sin stock o variante no encontrada para: %s", entradaUsuario)
 	}
 
 	w.Write([]byte(mensajeFinal))
