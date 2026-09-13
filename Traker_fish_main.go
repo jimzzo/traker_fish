@@ -13,26 +13,26 @@ import (
 
 var (
 	mutex          sync.RWMutex
-	catalogoPeces  []string                        // Lista rápida de peces base
-	variantesCache = make(map[string][]string)      // Caché dinámica de variantes por pez
+	catalogoPeces  []string
+	variantesCache = make(map[string][]string)
 )
 
-// Actualiza solo la lista principal de peces base (rápido y sin bloqueos al iniciar)
 func actualizarCatalogo() {
 	urlBase := "https://reef.xs-pets.com/fish"
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, _ := http.NewRequest("GET", urlBase, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
-		log.Println("⚠️ Error al actualizar el catálogo:", err)
+		log.Println("⚠️ ERROR crítico al conectar con Xundra:", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
+		log.Println("⚠️ ERROR leyendo HTML de Xundra:", err)
 		return
 	}
 
@@ -55,9 +55,9 @@ func actualizarCatalogo() {
 
 	mutex.Lock()
 	catalogoPeces = nuevosPeces
-	variantesCache = make(map[string][]string) // Limpiamos caché antigua
+	variantesCache = make(map[string][]string)
 	mutex.Unlock()
-	log.Printf("✅ Catálogo base sincronizado: %d peces.", len(nuevosPeces))
+	log.Printf("✅ Catálogo base sincronizado con éxito: %d peces encontrados.", len(nuevosPeces))
 }
 
 func iniciarActualizadorAutomatico() {
@@ -70,7 +70,6 @@ func iniciarActualizadorAutomatico() {
 	}()
 }
 
-// Obtiene las variantes de un pez de forma inteligente (las descarga una sola vez y las recuerda)
 func obtenerVariantesOficiales(pezBase string) []string {
 	mutex.RLock()
 	if vars, existe := variantesCache[pezBase]; existe {
@@ -79,11 +78,10 @@ func obtenerVariantesOficiales(pezBase string) []string {
 	}
 	mutex.RUnlock()
 
-	// Si no está en caché, buscamos su enlace en la web principal
 	urlBase := "https://reef.xs-pets.com/fish"
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, _ := http.NewRequest("GET", urlBase, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
@@ -110,7 +108,7 @@ func obtenerVariantesOficiales(pezBase string) []string {
 	}
 
 	reqDetalle, _ := http.NewRequest("GET", linkDetalle, nil)
-	reqDetalle.Header.Set("User-Agent", "Mozilla/5.0")
+	reqDetalle.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 	respDetalle, err := client.Do(reqDetalle)
 	if err != nil {
 		return nil
@@ -143,7 +141,6 @@ func obtenerVariantesOficiales(pezBase string) []string {
 		}
 	})
 
-	// Guardamos en caché para futuras consultas instantáneas
 	mutex.Lock()
 	variantesCache[pezBase] = variantes
 	mutex.Unlock()
@@ -151,7 +148,6 @@ func obtenerVariantesOficiales(pezBase string) []string {
 	return variantes
 }
 
-// Endpoint 1: Filtro inteligente que valida tanto el pez base como la variante real
 func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
@@ -160,17 +156,22 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 
 	r.ParseForm()
 	nombresRecibidos := r.FormValue("objetos")
-	if nombresRecibidos == "" {
+	
+	mutex.RLock()
+	catalogoLocal := catalogoPeces
+	mutex.RUnlock()
+
+	// LOGS DE DEPURACIÓN EN RENDER
+	log.Printf("📥 Recibido del HUD: [%s]", nombresRecibidos)
+	log.Printf("📦 Peces base en memoria: %d", len(catalogoLocal))
+
+	if nombresRecibidos == "" || len(catalogoLocal) == 0 {
 		w.Write([]byte("VACIO"))
 		return
 	}
 
 	objetosList := strings.Split(nombresRecibidos, "|||")
 	var validos []string
-
-	mutex.RLock()
-	catalogoLocal := catalogoPeces
-	mutex.RUnlock()
 
 OUTER:
 	for _, obj := range objetosList {
@@ -182,7 +183,6 @@ OUTER:
 		partesObj := strings.Split(obj, ":")
 		pezBase := strings.TrimSpace(partesObj[0])
 
-		// 1. Validar que el pez base exista
 		pezBaseValido := false
 		for _, cat := range catalogoLocal {
 			if strings.EqualFold(pezBase, cat) {
@@ -192,10 +192,10 @@ OUTER:
 		}
 
 		if !pezBaseValido {
+			log.Printf("❌ Descartado (Pez base no existe en catálogo): %s", pezBase)
 			continue
 		}
 
-		// 2. Si tiene variante (ej: "Crayfish: Prueba Hembra"), validamos que exista oficialmente
 		if len(partesObj) > 1 {
 			varianteBuscada := strings.TrimSpace(partesObj[1])
 			variantesOficiales := obtenerVariantesOficiales(pezBase)
@@ -209,17 +209,18 @@ OUTER:
 			}
 
 			if !varianteReal {
-				continue // Rechazado automáticamente porque la variante es inventada
+				log.Printf("❌ Descartado (Variante falsa/inventada): %s", obj)
+				continue
 			}
 		}
 
-		// Evitar duplicados
 		for _, v := range validos {
 			if strings.EqualFold(v, obj) {
 				continue OUTER
 			}
 		}
 		validos = append(validos, obj)
+		log.Printf("✅ Aceptado como válido: %s", obj)
 	}
 
 	if len(validos) == 0 {
@@ -230,7 +231,6 @@ OUTER:
 	w.Write([]byte(strings.Join(validos, "\n")))
 }
 
-// Endpoint 2: Consulta las existencias detalladas de un pez específico al pulsar el botón
 func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
@@ -245,11 +245,11 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	partes := strings.Split(entradaUsuario, ":")
-    pezBase := strings.TrimSpace(partes[0])
-    var varianteBuscada string
-    if len(partes) > 1 {
-        varianteBuscada = strings.TrimSpace(partes[1])
-    }
+	pezBase := strings.TrimSpace(partes[0])
+	var varianteBuscada string
+	if len(partes) > 1 {
+		varianteBuscada = strings.TrimSpace(partes[1])
+	}
 
 	urlBase := "https://reef.xs-pets.com/fish"
 	client := &http.Client{}
