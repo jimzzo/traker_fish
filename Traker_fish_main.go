@@ -68,61 +68,7 @@ func iniciarActualizadorAutomatico() {
 	}()
 }
 
-// Función auxiliar para comprobar si una variante existe realmente en la página de detalle del pez
-func validarVarianteEnWeb(pezBase, varianteBuscada string) bool {
-	urlBase := "https://reef.xs-pets.com/fish"
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, _ := http.NewRequest("GET", urlBase, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-
-	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != 200 {
-		return false
-	}
-	defer resp.Body.Close()
-
-	doc, _ := goquery.NewDocumentFromReader(resp.Body)
-	var linkDetalle string
-	doc.Find("a").Each(func(i int, s *goquery.Selection) {
-		if strings.EqualFold(strings.TrimSpace(s.Text()), pezBase) {
-			if href, existe := s.Attr("href"); existe {
-				linkDetalle = href
-			}
-		}
-	})
-
-	if linkDetalle == "" {
-		return false
-	}
-
-	if !strings.HasPrefix(linkDetalle, "http") {
-		linkDetalle = "https://reef.xs-pets.com/" + strings.TrimPrefix(linkDetalle, "/")
-	}
-
-	reqDetalle, _ := http.NewRequest("GET", linkDetalle, nil)
-	reqDetalle.Header.Set("User-Agent", "Mozilla/5.0")
-	respDetalle, err := client.Do(reqDetalle)
-	if err != nil {
-		return false
-	}
-	defer respDetalle.Body.Close()
-
-	docDetalle, _ := goquery.NewDocumentFromReader(respDetalle.Body)
-	encontrada := false
-
-	docDetalle.Find("tr").Each(func(i int, s *goquery.Selection) {
-		s.Find("td").Each(func(j int, cell *goquery.Selection) {
-			textoCelda := strings.TrimSpace(cell.Text())
-			if strings.EqualFold(textoCelda, varianteBuscada) {
-				encontrada = true
-			}
-		})
-	})
-
-	return encontrada
-}
-
-// Endpoint 1: Filtro estricto que valida tanto el pez base como la variante exacta en la web
+// Endpoint 1: Filtro rápido de menú usando la caché interna (instantáneo)
 func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
@@ -149,11 +95,11 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Separamos nombre base y variante (si tiene dos puntos)
+		// Extraemos el nombre base (antes de los dos puntos)
 		partesObj := strings.Split(obj, ":")
 		pezBase := strings.TrimSpace(partesObj[0])
 
-		// 1. Validar que el pez base exista en el catálogo general
+		// Comprobamos si el pez base existe en la caché oficial
 		pezBaseValido := false
 		for _, cat := range catalogoLocal {
 			if strings.EqualFold(pezBase, cat) {
@@ -162,30 +108,18 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if !pezBaseValido {
-			continue // Si el pez base no existe, descartado
-		}
-
-		// 2. Si el usuario especificó una variante (ej: "Crayfish: Blue Spotted"), 
-		// debemos comprobar que esa variante exista realmente en la web de Xundra.
-		if len(partesObj) > 1 {
-			varianteBuscada := strings.TrimSpace(partesObj[1])
-			// Validamos contra la web si la variante es real (ej: rechaza "Prueba Hembra")
-			if !validarVarianteEnWeb(pezBase, varianteBuscada) {
-				continue // Variante falsa o inventada por usuario, descartada
+		if pezBaseValido {
+			// Evitamos duplicados en el menú
+			duplicado := false
+			for _, v := range validos {
+				if strings.EqualFold(v, obj) {
+					duplicado = true
+					break
+				}
 			}
-		}
-
-		// Si pasa los filtros, lo añadimos sin duplicados
-		duplicado := false
-		for _, v := range validos {
-			if strings.EqualFold(v, obj) {
-				duplicado = true
-				break
+			if !duplicado {
+				validos = append(validos, obj)
 			}
-		}
-		if !duplicado {
-			validos = append(validos, obj)
 		}
 	}
 
@@ -197,7 +131,7 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(strings.Join(validos, "\n")))
 }
 
-// Endpoint 2: Consulta las existencias detalladas de un pez específico (EGGS / FISH)
+// Endpoint 2: Consulta detallada en la web oficial al pulsar un pez (Valida variantes reales)
 func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
@@ -246,7 +180,7 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if linkDetalle == "" {
-		w.Write([]byte(fmt.Sprintf("❌ El objeto [%s] no está en el catálogo.", pezBase)))
+		w.Write([]byte(fmt.Sprintf("❌ El objeto [%s] no está en el catálogo oficial.", pezBase)))
 		return
 	}
 
@@ -283,7 +217,8 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 			eggs := celdas[1]
 			fish := celdas[2]
 
-			if varianteBuscada == "" || strings.Contains(strings.ToLower(nombreFila), strings.ToLower(varianteBuscada)) {
+			// Si el usuario puso una variante, comprobamos que coincida exactamente con la tabla de la web
+			if varianteBuscada == "" || strings.EqualFold(nombreFila, varianteBuscada) {
 				resultadoBuilder.WriteString(fmt.Sprintf("• %s EGGS: %s | FISH: %s \n", nombreFila, eggs, fish))
 				encontradoVariante = true
 			}
@@ -292,7 +227,7 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 
 	mensajeFinal := resultadoBuilder.String()
 	if !encontradoVariante {
-		mensajeFinal = fmt.Sprintf("Sin stock para: %s", entradaUsuario)
+		mensajeFinal = fmt.Sprintf("⚠️ Variante [%s] no encontrada o inventada para %s.", varianteBuscada, pezBase)
 	}
 
 	w.Write([]byte(mensajeFinal))
