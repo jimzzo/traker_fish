@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+
+	_ "time/tzdata" // zonas horarias embebidas (hora SLT sin depender del sistema)
 )
 
 const (
@@ -23,6 +26,8 @@ const (
 	reintentoInicio = 30 * time.Second
 	prefijoHuevo    = "(fish egg)"
 	maxParalelo     = 4
+	maxFilasPantalla = 60
+	maxRare          = 5
 )
 
 var (
@@ -70,6 +75,49 @@ type filaPantalla struct {
 	LocFish  int
 	GlobEggs int
 	GlobFish int
+}
+
+// Hora de Second Life (SLT = hora del Pacífico).
+var zonaSLT = func() *time.Location {
+	if loc, err := time.LoadLocation("America/Los_Angeles"); err == nil {
+		return loc
+	}
+	return time.FixedZone("SLT", -8*3600)
+}()
+
+// ===================================================
+//  FORMATO DE ANCHO FIJO (lo que antes hacía el script de la pantalla)
+// ===================================================
+func padDer(s string, n int) string {
+	r := []rune(s)
+	if len(r) >= n {
+		return string(r[:n])
+	}
+	return s + strings.Repeat(" ", n-len(r))
+}
+
+func padIzq(s string, n int) string {
+	r := []rune(s)
+	if len(r) >= n {
+		return string(r[:n])
+	}
+	return strings.Repeat(" ", n-len(r)) + s
+}
+
+func centrar(s string, n int) string {
+	r := []rune(s)
+	if len(r) >= n {
+		return string(r[:n])
+	}
+	return padDer(strings.Repeat(" ", (n-len(r))/2)+s, n)
+}
+
+func recortar(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-2]) + ".."
 }
 
 // ===================================================
@@ -431,9 +479,15 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 
 // ===================================================
 //  /api/pantalla
-//  Entrada:  conteo = "nombre|n\nnombre|n\n..." (salida del escáner)
-//  Salida:   "V|Especie: Variante|huevosLoc|pecesLoc|huevosGlob|pecesGlob\n..."
-//            "VACIO" si no hay nada válido; 503 si el catálogo no está listo.
+//  Entrada:  conteo = líneas "H|Especie: Variante|n" (huevo) o "F|Especie: Variante|n" (pez)
+//                     (también acepta el formato antiguo "(Fish Egg) Especie: Variante|n")
+//            huella = huella de los datos que la pantalla ya tiene (opcional)
+//  Salida si nada cambió:   "IGUAL|hh:mm"
+//  Salida si hay cambios:   "K|huella\nT|hh:mm\n" + datos de ancho fijo:
+//     S|kpi1    kpi2    kpi3    kpi4                 (4 x 8, centrados; totales sobre TODAS)
+//     R|<32: nombre recortado + " " + huevosGlob>   (más rara, hasta maxRare empates)
+//     V|<32: nombre>|<8 hLoc>|<8 hGlob>|<8 pGlob>|<1 rara>   (máx. maxFilasPantalla)
+//  503 si el catálogo no está listo.
 // ===================================================
 func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -455,6 +509,14 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 
 	for _, linea := range strings.Split(conteo, "\n") {
 		linea = strings.TrimSpace(linea)
+		esHuevo := false
+
+		// Formato comprimido: "H|..." o "F|..."
+		if len(linea) > 2 && linea[1] == '|' && (linea[0] == 'H' || linea[0] == 'F') {
+			esHuevo = linea[0] == 'H'
+			linea = linea[2:]
+		}
+
 		sep := strings.LastIndexByte(linea, '|')
 		if sep <= 0 {
 			continue
@@ -462,8 +524,8 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 
 		nombre := strings.TrimSpace(linea[:sep])
 		n := aEntero(linea[sep+1:])
-		esHuevo := false
 
+		// Formato antiguo: "(Fish Egg) ..."
 		if len(nombre) > len(prefijoHuevo) && strings.EqualFold(nombre[:len(prefijoHuevo)], prefijoHuevo) {
 			nombre = strings.TrimSpace(nombre[len(prefijoHuevo):])
 			esHuevo = true
@@ -513,9 +575,16 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 		filas = append(filas, *f)
 	}
 
-	if len(filas) == 0 {
-		w.Write([]byte("VACIO"))
-		return
+	// Totales y mínimo global sobre TODAS las variantes, antes de recortar.
+	var sumLE, sumGE, sumGF int
+	minGE := -1
+	for _, f := range filas {
+		sumLE += f.LocEggs
+		sumGE += f.GlobEggs
+		sumGF += f.GlobFish
+		if minGE < 0 || f.GlobEggs < minGE {
+			minGE = f.GlobEggs
+		}
 	}
 
 	sort.SliceStable(filas, func(i, j int) bool {
@@ -528,22 +597,60 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 		return filas[i].Nombre < filas[j].Nombre
 	})
 
-	var b strings.Builder
-	b.Grow(len(filas) * 64)
+	var d strings.Builder
+	d.Grow(40 + (maxRare*36) + (maxFilasPantalla * 66))
+
+	d.WriteString("S|")
+	d.WriteString(centrar(strconv.Itoa(sumLE), 8))
+	d.WriteString(centrar(strconv.Itoa(len(filas)), 8))
+	d.WriteString(centrar(strconv.Itoa(sumGE), 8))
+	d.WriteString(centrar(strconv.Itoa(sumGF), 8))
+	d.WriteByte('\n')
+
+	nRare := 0
 	for _, f := range filas {
-		b.WriteString("V|")
-		b.WriteString(f.Nombre)
-		b.WriteByte('|')
-		b.WriteString(strconv.Itoa(f.LocEggs))
-		b.WriteByte('|')
-		b.WriteString(strconv.Itoa(f.LocFish))
-		b.WriteByte('|')
-		b.WriteString(strconv.Itoa(f.GlobEggs))
-		b.WriteByte('|')
-		b.WriteString(strconv.Itoa(f.GlobFish))
-		b.WriteByte('\n')
+		if f.GlobEggs == minGE {
+			num := " " + strconv.Itoa(f.GlobEggs)
+			d.WriteString("R|")
+			d.WriteString(padDer(recortar(f.Nombre, 32-len(num))+num, 32))
+			d.WriteByte('\n')
+			nRare++
+			if nRare >= maxRare {
+				break
+			}
+		}
 	}
-	w.Write([]byte(b.String()))
+
+	if len(filas) > maxFilasPantalla {
+		filas = filas[:maxFilasPantalla]
+	}
+	for _, f := range filas {
+		d.WriteString("V|")
+		d.WriteString(padDer(recortar(f.Nombre, 32), 32))
+		d.WriteByte('|')
+		d.WriteString(padIzq(strconv.Itoa(f.LocEggs), 8))
+		d.WriteByte('|')
+		d.WriteString(padIzq(strconv.Itoa(f.GlobEggs), 8))
+		d.WriteByte('|')
+		d.WriteString(padIzq(strconv.Itoa(f.GlobFish), 8))
+		if f.GlobEggs == minGE {
+			d.WriteString("|1\n")
+		} else {
+			d.WriteString("|0\n")
+		}
+	}
+
+	datos := d.String()
+	h := fnv.New32a()
+	h.Write([]byte(datos))
+	huella := strconv.FormatUint(uint64(h.Sum32()), 16)
+	hora := time.Now().In(zonaSLT).Format("15:04")
+
+	if r.FormValue("huella") == huella {
+		w.Write([]byte("IGUAL|" + hora))
+		return
+	}
+	w.Write([]byte("K|" + huella + "\nT|" + hora + "\n" + datos))
 }
 
 func main() {
