@@ -19,13 +19,13 @@ import (
 )
 
 const (
-	urlXundra       = "https://reef.xs-pets.com"
-	urlCatalogo     = "https://reef.xs-pets.com/fish"
-	ttlDetalle      = 2 * time.Minute
-	esperaCatalogo  = 15 * time.Second
-	reintentoInicio = 30 * time.Second
-	prefijoHuevo    = "(fish egg)"
-	maxParalelo     = 4
+	urlXundra        = "https://reef.xs-pets.com"
+	urlCatalogo      = "https://reef.xs-pets.com/fish"
+	ttlDetalle       = 2 * time.Minute
+	esperaCatalogo   = 15 * time.Second
+	reintentoInicio  = 30 * time.Second
+	prefijoHuevo     = "(fish egg)"
+	maxParalelo      = 4
 	maxFilasPantalla = 60
 	maxRare          = 5
 )
@@ -86,7 +86,9 @@ var zonaSLT = func() *time.Location {
 }()
 
 // ===================================================
-//  FORMATO DE ANCHO FIJO (lo que antes hacía el script de la pantalla)
+//
+//	FORMATO DE ANCHO FIJO (lo que antes hacía el script de la pantalla)
+//
 // ===================================================
 func padDer(s string, n int) string {
 	r := []rune(s)
@@ -121,7 +123,9 @@ func recortar(s string, n int) string {
 }
 
 // ===================================================
-//  UTILIDADES
+//
+//	UTILIDADES
+//
 // ===================================================
 func absoluto(href string) string {
 	if strings.HasPrefix(href, "http") {
@@ -176,7 +180,9 @@ func enCatalogo(pezBase string) bool {
 }
 
 // ===================================================
-//  CATÁLOGO
+//
+//	CATÁLOGO
+//
 // ===================================================
 func actualizarCatalogo() bool {
 	doc, err := descargar(urlCatalogo)
@@ -234,6 +240,7 @@ func iniciarActualizadorAutomatico() {
 //   - Caché vigente: respuesta inmediata.
 //   - Caché caducada: respuesta inmediata con la copia anterior y refresco en segundo plano.
 //   - Sin caché: espera a la descarga (compartida con cualquier otra petición simultánea).
+//
 // encontrado=false: el pez no está en el catálogo. err=errRed: falló la descarga y no hay copia.
 func obtenerDetalle(pezBase string) (detalleCache, bool, error) {
 	clave := strings.ToLower(strings.TrimSpace(pezBase))
@@ -340,7 +347,9 @@ func detallesEnParalelo(bases map[string]bool) map[string]detalleCache {
 }
 
 // ===================================================
-//  /api/filtrar_menu  (HUD manual — misma entrada y salida)
+//
+//	/api/filtrar_menu  (HUD manual — misma entrada y salida)
+//
 // ===================================================
 func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -419,7 +428,9 @@ func filtrarMenuHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ===================================================
-//  /api/pez  (HUD manual — misma entrada y salida)
+//
+//	/api/pez  (HUD manual — misma entrada y salida)
+//
 // ===================================================
 func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -478,16 +489,18 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ===================================================
-//  /api/pantalla
-//  Entrada:  conteo = líneas "H|Especie: Variante|n" (huevo) o "F|Especie: Variante|n" (pez)
-//                     (también acepta el formato antiguo "(Fish Egg) Especie: Variante|n")
-//            huella = huella de los datos que la pantalla ya tiene (opcional)
-//  Salida si nada cambió:   "IGUAL|hh:mm"
-//  Salida si hay cambios:   "K|huella\nT|hh:mm\n" + datos de ancho fijo:
-//     S|kpi1    kpi2    kpi3    kpi4                 (4 x 8, centrados; totales sobre TODAS)
-//     R|<32: nombre recortado + " " + huevosGlob>   (más rara, hasta maxRare empates)
-//     V|<32: nombre>|<8 hLoc>|<8 hGlob>|<8 pGlob>|<1 rara>   (máx. maxFilasPantalla)
-//  503 si el catálogo no está listo.
+//
+//	/api/pantalla
+//	Entrada:  conteo = líneas "H|Especie: Variante|n" (huevo) o "F|Especie: Variante|n" (pez)
+//	                   (también acepta el formato antiguo "(Fish Egg) Especie: Variante|n")
+//	          huella = huella de los datos que la pantalla ya tiene (opcional)
+//	Salida si nada cambió:   "IGUAL|hh:mm"
+//	Salida si hay cambios:   "K|huella\nT|hh:mm\n" + datos de ancho fijo:
+//	   S|kpi1    kpi2    kpi3    kpi4                 (4 x 8, centrados; kpi4 = cuota % huevos locales/históricos)
+//	   R|<32: nombre recortado + " " + huevosGlob>   (más rara, hasta maxRare empates)
+//	   V|<32: nombre>|<8 hLoc>|<8 hGlob>|<8 pGlob>|<1 rara>   (máx. maxFilasPantalla)
+//	503 si el catálogo no está listo.
+//
 // ===================================================
 func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -576,12 +589,11 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Totales y mínimo global sobre TODAS las variantes, antes de recortar.
-	var sumLE, sumGE, sumGF int
+	var sumLE, sumGE int
 	minGE := -1
 	for _, f := range filas {
 		sumLE += f.LocEggs
 		sumGE += f.GlobEggs
-		sumGF += f.GlobFish
 		if minGE < 0 || f.GlobEggs < minGE {
 			minGE = f.GlobEggs
 		}
@@ -598,13 +610,17 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var d strings.Builder
-	d.Grow(40 + (maxRare*36) + (maxFilasPantalla * 66))
+	d.Grow(40 + (maxRare * 36) + (maxFilasPantalla * 66))
 
 	d.WriteString("S|")
 	d.WriteString(centrar(strconv.Itoa(sumLE), 8))
 	d.WriteString(centrar(strconv.Itoa(len(filas)), 8))
 	d.WriteString(centrar(strconv.Itoa(sumGE), 8))
-	d.WriteString(centrar(strconv.Itoa(sumGF), 8))
+	cuota := 0.0
+	if sumGE > 0 {
+		cuota = float64(sumLE) * 100 / float64(sumGE)
+	}
+	d.WriteString(centrar(strconv.FormatFloat(cuota, 'f', 2, 64)+"%", 8))
 	d.WriteByte('\n')
 
 	nRare := 0
