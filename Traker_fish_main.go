@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,15 +20,16 @@ import (
 )
 
 const (
-	urlXundra        = "https://reef.xs-pets.com"
-	urlCatalogo      = "https://reef.xs-pets.com/fish"
-	ttlDetalle       = 2 * time.Minute
-	esperaCatalogo   = 15 * time.Second
-	reintentoInicio  = 30 * time.Second
-	prefijoHuevo     = "(fish egg)"
-	maxParalelo      = 4
-	maxFilasPantalla = 60
-	maxRare          = 5
+	urlXundra         = "https://reef.xs-pets.com"
+	urlCatalogo       = "https://reef.xs-pets.com/fish"
+	ttlDetalle        = 2 * time.Minute
+	esperaCatalogo    = 15 * time.Second
+	reintentoInicio   = 30 * time.Second
+	prefijoHuevo      = "(fish egg)"
+	maxParalelo       = 4
+	maxFilasPantalla  = 60
+	maxRare           = 5
+	maxCuerpoPantalla = 256 << 10 // 256 KB: muy por encima de lo que puede enviar un script
 )
 
 var (
@@ -502,6 +504,45 @@ func consultarExistenciasHandler(w http.ResponseWriter, r *http.Request) {
 //	503 si el catálogo no está listo.
 //
 // ===================================================
+// interpretarLineaConteo acepta los tres formatos que pueden enviar los scripts:
+//
+//	"Especie: Variante|huevos|peces"     formato actual (unificado en STOCK_RED)
+//	"H|Especie: Variante|n"              formato anterior: H = huevos, F = peces
+//	"(Fish Egg) Especie: Variante|n"     formato original; sin prefijo = peces
+func interpretarLineaConteo(linea string) (nombre string, huevos, peces int, valida bool) {
+	linea = strings.TrimSpace(linea)
+	if linea == "" {
+		return "", 0, 0, false
+	}
+	campos := strings.Split(linea, "|")
+
+	switch {
+	case len(campos) == 3 && (campos[0] == "H" || campos[0] == "F"):
+		nombre = strings.TrimSpace(campos[1])
+		if campos[0] == "H" {
+			huevos = aEntero(campos[2])
+		} else {
+			peces = aEntero(campos[2])
+		}
+	case len(campos) == 3:
+		nombre = strings.TrimSpace(campos[0])
+		huevos = aEntero(campos[1])
+		peces = aEntero(campos[2])
+	case len(campos) == 2:
+		nombre = strings.TrimSpace(campos[0])
+		n := aEntero(campos[1])
+		if len(nombre) > len(prefijoHuevo) && strings.EqualFold(nombre[:len(prefijoHuevo)], prefijoHuevo) {
+			nombre = strings.TrimSpace(nombre[len(prefijoHuevo):])
+			huevos = n
+		} else {
+			peces = n
+		}
+	default:
+		return "", 0, 0, false
+	}
+	return nombre, huevos, peces, nombre != ""
+}
+
 func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
@@ -513,35 +554,27 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// La huella llega en la URL (?huella=...). El conteo llega como texto plano
+	// en el cuerpo (formato nuevo) o como campo de formulario "conteo" (formato antiguo).
 	r.ParseForm()
 	conteo := r.FormValue("conteo")
+	if conteo == "" {
+		cuerpo, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCuerpoPantalla))
+		if err != nil {
+			http.Error(w, "Cuerpo demasiado grande", http.StatusRequestEntityTooLarge)
+			return
+		}
+		conteo = string(cuerpo)
+	}
 
 	locales := make(map[string]*filaPantalla)
 	var orden []string
 	bases := make(map[string]bool)
 
 	for _, linea := range strings.Split(conteo, "\n") {
-		linea = strings.TrimSpace(linea)
-		esHuevo := false
-
-		// Formato comprimido: "H|..." o "F|..."
-		if len(linea) > 2 && linea[1] == '|' && (linea[0] == 'H' || linea[0] == 'F') {
-			esHuevo = linea[0] == 'H'
-			linea = linea[2:]
-		}
-
-		sep := strings.LastIndexByte(linea, '|')
-		if sep <= 0 {
+		nombre, huevos, peces, valida := interpretarLineaConteo(linea)
+		if !valida {
 			continue
-		}
-
-		nombre := strings.TrimSpace(linea[:sep])
-		n := aEntero(linea[sep+1:])
-
-		// Formato antiguo: "(Fish Egg) ..."
-		if len(nombre) > len(prefijoHuevo) && strings.EqualFold(nombre[:len(prefijoHuevo)], prefijoHuevo) {
-			nombre = strings.TrimSpace(nombre[len(prefijoHuevo):])
-			esHuevo = true
 		}
 
 		partes := strings.SplitN(nombre, ":", 2)
@@ -560,11 +593,8 @@ func pantallaHandler(w http.ResponseWriter, r *http.Request) {
 			locales[clave] = f
 			orden = append(orden, clave)
 		}
-		if esHuevo {
-			f.LocEggs += n
-		} else {
-			f.LocFish += n
-		}
+		f.LocEggs += huevos
+		f.LocFish += peces
 		bases[base] = true
 	}
 
